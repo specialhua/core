@@ -158,6 +158,30 @@ export class CommentService {
     return reader ? { ...reader, id: readerId } : null
   }
 
+  /**
+   * Bind the reader's uploaded images in `text` to a freshly created comment
+   * (pending -> active), so the comment-upload TTL sweep keeps them. A
+   * rejected attach (cap exceeded, not owned, already bound) rolls the
+   * comment back so it never persists with unbound images.
+   */
+  private async attachReaderImagesOrRollback(
+    commentId: string,
+    readerId: string,
+    text: string,
+  ) {
+    try {
+      await this.fileReferenceService.attachReaderImagesToComment({
+        commentId,
+        readerId,
+        text,
+        mode: 'create',
+      })
+    } catch (err) {
+      await this.commentRepository.deleteById(commentId).catch(() => {})
+      throw err
+    }
+  }
+
   private stripReaderIdentitySnapshot(doc: Partial<CommentModel>) {
     delete doc.author
     delete doc.mail
@@ -414,6 +438,14 @@ export class CommentService {
       readerId: reader ? reader.id : undefined,
     })
 
+    if (reader) {
+      await this.attachReaderImagesOrRollback(
+        comment.id,
+        reader.id,
+        doc.text ?? '',
+      )
+    }
+
     await this.invalidateTabCountsCache()
     const options = await this.configsService.get('commentOptions')
     return {
@@ -525,6 +557,15 @@ export class CommentService {
       isWhispers: parent.isWhispers,
       readerId: reader ? reader.id : undefined,
     })
+
+    if (reader) {
+      await this.attachReaderImagesOrRollback(
+        comment.id,
+        reader.id,
+        doc.text ?? '',
+      )
+    }
+
     await this.invalidateTabCountsCache()
     const options = await this.configsService.get('commentOptions')
     return {
@@ -1270,6 +1311,22 @@ export class CommentService {
     if (comment.isDeleted)
       throw createAppException(AppErrorCode.NO_CONTENT_MODIFIABLE)
     await this.commentRepository.update(id, { text, editedAt: new Date() })
+    if (comment.readerId) {
+      try {
+        await this.fileReferenceService.attachReaderImagesToComment({
+          commentId: id,
+          readerId: comment.readerId,
+          text,
+          mode: 'update',
+        })
+      } catch (err) {
+        await this.commentRepository.update(id, {
+          text: comment.text,
+          editedAt: comment.editedAt,
+        })
+        throw err
+      }
+    }
     const options = await this.configsService.get('commentOptions')
     const published =
       commentSubmissionStatus(comment, !!options.commentShouldAudit) ===

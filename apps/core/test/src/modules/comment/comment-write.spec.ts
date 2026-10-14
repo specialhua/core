@@ -118,4 +118,122 @@ describe('CommentService write operations', () => {
       CommentState.Read,
     )
   })
+
+  describe('reader image binding', () => {
+    const runAsReader = async <T>(fn: () => Promise<T>) => {
+      const { RequestContext } =
+        await import('~/common/contexts/request.context')
+      const reqCtx = new RequestContext(
+        { headers: {}, readerId: 'reader-1' } as any,
+        {} as any,
+      )
+      return RequestContext.run(reqCtx, fn)
+    }
+
+    const createReaderFixture = () => {
+      const fixture = createCommentServiceFixture()
+      fixture.readerService.findReaderInIds.mockResolvedValue([
+        { name: 'Reader', email: 'reader@example.com' },
+      ])
+      return fixture
+    }
+
+    const text = 'look ![](https://cdn.example.com/comments/reader-1/a.png)'
+
+    it('attaches uploaded images when a reader creates a comment', async () => {
+      const { fileReferenceService, repository, service } =
+        createReaderFixture()
+      repository.create.mockResolvedValue(
+        createCommentRow({ id: 'comment-9', readerId: 'reader-1' }),
+      )
+
+      await runAsReader(() => service.createComment('post-1', { text }))
+
+      expect(
+        fileReferenceService.attachReaderImagesToComment,
+      ).toHaveBeenCalledWith({
+        commentId: 'comment-9',
+        readerId: 'reader-1',
+        text,
+        mode: 'create',
+      })
+    })
+
+    it('attaches uploaded images when a reader replies', async () => {
+      const { fileReferenceService, repository, service } =
+        createReaderFixture()
+      repository.findById.mockResolvedValue(
+        createCommentRow({ id: 'parent-1', state: CommentState.Read }),
+      )
+      repository.createReply.mockResolvedValue(
+        createCommentRow({ id: 'reply-9', readerId: 'reader-1' }),
+      )
+
+      await runAsReader(() => service.replyComment('parent-1', { text }))
+
+      expect(
+        fileReferenceService.attachReaderImagesToComment,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({ commentId: 'reply-9', mode: 'create' }),
+      )
+    })
+
+    it('rolls back the comment when attaching images is rejected', async () => {
+      const { fileReferenceService, repository, service } =
+        createReaderFixture()
+      repository.create.mockResolvedValue(
+        createCommentRow({ id: 'comment-9', readerId: 'reader-1' }),
+      )
+      repository.deleteById.mockResolvedValue(null)
+      const error = new Error('cap exceeded')
+      fileReferenceService.attachReaderImagesToComment.mockRejectedValue(error)
+
+      await expect(
+        runAsReader(() => service.createComment('post-1', { text })),
+      ).rejects.toBe(error)
+      expect(repository.deleteById).toHaveBeenCalledWith('comment-9')
+    })
+
+    it('does not attach images for anonymous comments', async () => {
+      const { fileReferenceService, repository, service } =
+        createCommentServiceFixture()
+      repository.create.mockResolvedValue(createCommentRow())
+
+      await service.createComment('post-1', { text, author: 'Alice' })
+
+      expect(
+        fileReferenceService.attachReaderImagesToComment,
+      ).not.toHaveBeenCalled()
+    })
+
+    it('re-syncs images on reader edits and restores text on failure', async () => {
+      const { fileReferenceService, repository, service } =
+        createCommentServiceFixture()
+      const original = createCommentRow({
+        id: 'comment-9',
+        readerId: 'reader-1',
+        text: 'old',
+      })
+      repository.findById.mockResolvedValue(original)
+      repository.update.mockResolvedValue(original)
+
+      await service.editComment('comment-9', text)
+      expect(
+        fileReferenceService.attachReaderImagesToComment,
+      ).toHaveBeenCalledWith({
+        commentId: 'comment-9',
+        readerId: 'reader-1',
+        text,
+        mode: 'update',
+      })
+
+      const error = new Error('not owned')
+      fileReferenceService.attachReaderImagesToComment.mockRejectedValue(error)
+      await expect(service.editComment('comment-9', text)).rejects.toBe(error)
+      expect(repository.update).toHaveBeenLastCalledWith('comment-9', {
+        text: 'old',
+        editedAt: null,
+      })
+    })
+  })
 })

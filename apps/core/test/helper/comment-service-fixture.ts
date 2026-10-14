@@ -80,7 +80,12 @@ export const createCommentServiceFixture = () => {
   }
   const eventManager = { broadcast: vi.fn() }
   const readerService = { findReaderInIds: vi.fn().mockResolvedValue([]) }
-  const fileReferenceService = { hardDeleteFilesForComment: vi.fn() }
+  const fileReferenceService = {
+    hardDeleteFilesForComment: vi.fn(),
+    attachReaderImagesToComment: vi
+      .fn()
+      .mockResolvedValue({ attachedCount: 0, detachedCount: 0 }),
+  }
   const commentCountryService = {
     lookupCountryCode: vi.fn().mockResolvedValue(null),
   }
@@ -118,6 +123,7 @@ export const createCommentServiceFixture = () => {
     databaseService,
     eventManager,
     fileReferenceService,
+    readerService,
     repository,
     redisClient,
     redisService,
